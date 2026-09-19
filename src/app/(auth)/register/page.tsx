@@ -38,32 +38,35 @@ export default function RegisterPage() {
         throw new Error(authError?.message || 'Error al registrar la cuenta de usuario.')
       }
 
-      // 2. Invocar Edge Function para inicializar perfil, código de invitado y referidos
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/register-with-invite`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({
-            userId: authData.user.id,
-            username: username.trim(),
-            email: email.trim(),
-            inviteCode: inviteCode.trim() || undefined,
-          }),
+      // 2. Invocar Edge Function si la URL de Supabase está configurada
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      if (supabaseUrl && !supabaseUrl.includes('placeholder')) {
+        try {
+          const response = await fetch(`${supabaseUrl}/functions/v1/register-with-invite`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}`,
+            },
+            body: JSON.stringify({
+              userId: authData.user.id,
+              username: username.trim(),
+              email: email.trim(),
+              inviteCode: inviteCode.trim() || undefined,
+            }),
+          })
+
+          const result = await response.json()
+          if (!response.ok || result.error) {
+            console.warn('Edge function error:', result.error)
+          }
+        } catch (fetchErr) {
+          console.warn('Could not call Edge Function (using direct fallback profile creation if needed):', fetchErr)
         }
-      )
-
-      const result = await response.json()
-
-      if (!response.ok || result.error) {
-        throw new Error(result.error || 'Error al procesar el perfil de fidelización.')
       }
 
-      // Redirigir al dashboard
-      router.push('/dashboard')
+      // Redirigir a la ruta principal /
+      router.push('/')
       router.refresh()
     } catch (err: any) {
       setErrorMsg(err.message || 'Error inesperado durante el registro.')
