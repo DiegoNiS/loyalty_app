@@ -10,7 +10,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const router = Router()
+  const router = useRouter()
   const supabase = createClient()
 
   async function handleLogin(e: React.FormEvent) {
