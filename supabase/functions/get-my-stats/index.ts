@@ -7,53 +7,76 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 serve(async (req: Request) => {
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Content-Type': 'application/json',
+  }
+
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
   try {
     if (req.method !== 'GET') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 })
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: corsHeaders,
+      })
     }
 
-    const authHeader = req.headers.get('Authorization') || ''
-    const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
-    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') || ''
+    // 1. Validar autenticación
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(JSON.stringify({ error: 'No autorizado' }), {
+        status: 401,
+        headers: corsHeaders,
+      })
+    }
 
-    // 1. Verificar la sesión del usuario mediante el token JWT
-    const supabaseUserClient = createClient(supabaseUrl, supabaseAnonKey, {
-      global: { headers: { Authorization: authHeader } },
-    })
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') ?? ''
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    const { data: { user }, error: authError } = await supabaseUserClient.auth.getUser()
+    const token = authHeader.replace('Bearer ', '')
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token)
 
     if (authError || !user) {
-      return new Response(JSON.stringify({ error: 'No autorizado' }), { status: 401 })
+      return new Response(JSON.stringify({ error: 'Token de sesión inválido' }), {
+        status: 401,
+        headers: corsHeaders,
+      })
     }
 
-    // Cliente con service role para lectura de perfil
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
-
-    // 2. Obtener datos del perfil del usuario
-    const { data: profile, error: profileError } = await supabaseAdmin
+    // 2. Consultar perfil del usuario
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('id, username, role, email_edu_verified, invite_code, points, current_streak, last_attendance_date')
+      .select('id, username, role, points, current_streak, invite_code, email_edu_verified, last_attendance_date')
       .eq('id', user.id)
       .single()
 
     if (profileError || !profile) {
-      return new Response(JSON.stringify({ error: 'Perfil no encontrado' }), { status: 404 })
+      return new Response(JSON.stringify({ error: 'Perfil no encontrado' }), {
+        status: 404,
+        headers: corsHeaders,
+      })
     }
 
-    // 3. Contar total de asistencias del usuario
-    const { count: totalAttendances } = await supabaseAdmin
-      .from('attendances')
-      .select('*', { count: 'exact', head: true })
+    // 3. Opcional: Verificar la suma real de puntos desde points_ledger
+    const { data: ledgerSum } = await supabase
+      .from('points_ledger')
+      .select('delta')
       .eq('user_id', user.id)
 
-    // 4. Contar total de referidos efectivos
-    const { count: totalReferralsAttended } = await supabaseAdmin
-      .from('referrals')
-      .select('*', { count: 'exact', head: true })
-      .eq('inviter_id', user.id)
-      .eq('status', 'attended')
+    const computedPoints = (ledgerSum || []).reduce((acc: number, curr: { delta: number }) => acc + curr.delta, 0)
+    // Usar la suma de points_ledger si difiere del campo derivado (para prevenir inconsistencias)
+    const totalPoints = Math.max(profile.points, computedPoints)
+
+    // 4. Payload para código QR único
+    const qrPayload = JSON.stringify({
+      userId: profile.id,
+      username: profile.username,
+    })
 
     return new Response(
       JSON.stringify({
@@ -62,22 +85,20 @@ serve(async (req: Request) => {
           userId: profile.id,
           username: profile.username,
           role: profile.role,
-          emailEduVerified: profile.email_edu_verified,
-          points: profile.points,
+          points: totalPoints,
           currentStreak: profile.current_streak,
-          lastAttendanceDate: profile.last_attendance_date,
           inviteCode: profile.invite_code,
-          qrPayload: profile.id, // ID único utilizado para generar el QR en el frontend
-          totalAttendances: totalAttendances || 0,
-          totalReferralsAttended: totalReferralsAttended || 0,
+          emailEduVerified: profile.email_edu_verified,
+          lastAttendanceDate: profile.last_attendance_date,
+          qrPayload,
         },
       }),
-      { headers: { 'Content-Type': 'application/json' }, status: 200 }
+      { status: 200, headers: corsHeaders }
     )
   } catch (error: any) {
     return new Response(JSON.stringify({ error: error.message }), {
-      headers: { 'Content-Type': 'application/json' },
       status: 400,
+      headers: corsHeaders,
     })
   }
 })
