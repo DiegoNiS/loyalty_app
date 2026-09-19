@@ -6,9 +6,17 @@ export async function updateSession(request: NextRequest) {
     request,
   })
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  // Si no hay variables de Supabase en .env.local, omitir la verificación de sesión en middleware para evitar crash
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return supabaseResponse
+  }
+
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    supabaseUrl,
+    supabaseAnonKey,
     {
       cookies: {
         getAll() {
@@ -43,7 +51,6 @@ export async function updateSession(request: NextRequest) {
   }
 
   if (user) {
-    // Si el usuario ya está autenticado e intenta ir a login o register, redirigir según su rol
     if (isAuthPage) {
       const { data: profile } = await supabase
         .from('profiles')
@@ -57,7 +64,6 @@ export async function updateSession(request: NextRequest) {
       return NextResponse.redirect(url)
     }
 
-    // Protección de rutas por rol: /panel requiere role === 'admin'
     if (pathname.startsWith('/panel')) {
       const { data: profile } = await supabase
         .from('profiles')
