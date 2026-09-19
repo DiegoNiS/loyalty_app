@@ -3,22 +3,22 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import QRScannerModal from '@/components/QRScannerModal'
 
 export default function AdminPanel() {
   const [targetUserId, setTargetUserId] = useState('')
   const [eventTypeCode, setEventTypeCode] = useState<'regular_tasting' | 'special_event'>('regular_tasting')
   const [loading, setLoading] = useState(false)
+  const [isScannerOpen, setIsScannerOpen] = useState(false)
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
   const router = useRouter()
   const supabase = createClient()
 
-  async function handleMarkAttendance(e: React.FormEvent) {
-    e.preventDefault()
+  async function processAttendance(userIdRaw: string) {
     setStatusMsg(null)
+    let userId = userIdRaw.trim()
 
-    let userId = targetUserId.trim()
-
-    // Si el texto pegado/escaneado es un objeto JSON (QR payload), extraer el userId
+    // Extraer userId si el contenido del QR escaneado es un objeto JSON
     if (userId.startsWith('{')) {
       try {
         const parsed = JSON.parse(userId)
@@ -26,12 +26,12 @@ export default function AdminPanel() {
           userId = parsed.userId
         }
       } catch {
-        // mantener como está si no es JSON válido
+        // mantener como string si no es JSON
       }
     }
 
     if (!userId) {
-      setStatusMsg({ type: 'error', text: 'Por favor ingresa un ID de usuario o escanea el QR.' })
+      setStatusMsg({ type: 'error', text: 'Por favor ingresa un ID válido o escanea el código QR.' })
       return
     }
 
@@ -68,14 +68,24 @@ export default function AdminPanel() {
 
       setStatusMsg({
         type: 'success',
-        text: `¡Asistencia registrada con éxito! Puntos otorgados: +${result.pointsAwarded}. Nueva racha: ${result.newStreak} 🔥`,
+        text: `¡Asistencia registrada! Puntos: +${result.pointsAwarded}. Nueva racha: ${result.newStreak} 🔥`,
       })
       setTargetUserId('')
     } catch (err: any) {
-      setStatusMsg({ type: 'error', text: err.message || 'Error inesperado al marcar asistencia.' })
+      setStatusMsg({ type: 'error', text: err.message || 'Error al procesar asistencia.' })
     } finally {
       setLoading(false)
     }
+  }
+
+  function handleFormSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    processAttendance(targetUserId)
+  }
+
+  function handleScanSuccess(decodedText: string) {
+    setTargetUserId(decodedText)
+    processAttendance(decodedText)
   }
 
   async function handleLogout() {
@@ -85,84 +95,108 @@ export default function AdminPanel() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-6 lg:p-8">
-      <div className="max-w-xl mx-auto space-y-6">
-        {/* Header Admin */}
-        <div className="flex items-center justify-between bg-slate-900/80 border border-amber-500/20 p-4 rounded-2xl backdrop-blur-md shadow-lg">
+    <div className="min-h-screen bg-slate-950 text-slate-100 p-4 sm:p-6 lg:p-8 pb-20">
+      <div className="max-w-md mx-auto space-y-5">
+        {/* Header Admin en Móvil */}
+        <div className="flex items-center justify-between bg-slate-900/90 border border-amber-500/20 p-4 rounded-2xl backdrop-blur-md shadow-lg">
           <div>
-            <span className="text-xs font-bold uppercase tracking-wider text-amber-500">
-              Panel de Administración
+            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500">
+              Panel de Atención (Zahir)
             </span>
-            <h1 className="text-xl font-bold text-slate-100">Vinos del Corazón (Zahir)</h1>
+            <h1 className="text-lg font-bold text-slate-100">Vinos del Corazón</h1>
           </div>
           <button
             onClick={handleLogout}
             className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium rounded-xl transition"
           >
-            Cerrar Sesión
+            Salir
           </button>
         </div>
 
-        {/* Formulario de Marcado de Asistencia */}
-        <div className="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-5 shadow-2xl">
+        {/* Botón Principal para Escanear Cámara de Celular */}
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-4 shadow-xl text-center">
           <div>
-            <h2 className="text-lg font-bold text-slate-200">Registrar Asistencia Presencial</h2>
-            <p className="text-xs text-slate-400 mt-1">
-              Ingresa el ID del usuario o el contenido completo del código QR escaneado.
+            <h2 className="text-base font-bold text-slate-100">Escáner de Cámara Móvil</h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Escanea directamente el código QR desde la pantalla del celular del cliente.
             </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsScannerOpen(true)}
+            className="w-full py-4 bg-gradient-to-r from-amber-500 to-red-600 hover:from-amber-400 hover:to-red-500 text-white font-extrabold text-sm rounded-2xl shadow-xl transition flex items-center justify-center space-x-2"
+          >
+            <span className="text-xl">📷</span>
+            <span>Abrir Cámara y Escanear QR</span>
+          </button>
+        </div>
+
+        {/* Formulario alternativo manual / pegar ID */}
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 shadow-lg">
+          <div className="border-b border-slate-800 pb-3">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
+              O bien: Ingreso Manual de ID
+            </h3>
           </div>
 
           {statusMsg && (
             <div
-              className={`p-4 rounded-xl text-sm font-medium text-center ${
+              className={`p-3 rounded-xl text-xs font-medium text-center ${
                 statusMsg.type === 'success'
-                  ? 'bg-emerald-950/80 border border-emerald-800 text-emerald-200'
-                  : 'bg-red-950/80 border border-red-800 text-red-200'
+                  ? 'bg-emerald-950/90 border border-emerald-800 text-emerald-200'
+                  : 'bg-red-950/90 border border-red-800 text-red-200'
               }`}
             >
               {statusMsg.text}
             </div>
           )}
 
-          <form onSubmit={handleMarkAttendance} className="space-y-4">
+          <form onSubmit={handleFormSubmit} className="space-y-3">
             <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                ID de Cliente o Payload del QR
-              </label>
-              <textarea
-                rows={3}
-                required
-                placeholder='Pega o escanea el ID de usuario (ej. 123e4567-e89b-12d3-a456-426614174000) o JSON del QR...'
-                value={targetUserId}
-                onChange={(e) => setTargetUserId(e.target.value)}
-                className="w-full px-4 py-3 bg-slate-950 border border-slate-800 rounded-xl focus:outline-none focus:border-amber-500 text-slate-100 text-sm font-mono transition resize-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
                 Tipo de Evento
               </label>
               <select
                 value={eventTypeCode}
                 onChange={(e) => setEventTypeCode(e.target.value as any)}
-                className="w-full px-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl focus:outline-none focus:border-amber-500 text-slate-100 text-sm transition"
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl focus:outline-none focus:border-amber-500 text-slate-100 text-xs transition"
               >
                 <option value="regular_tasting">Cata Regular (Estándar)</option>
-                <option value="special_event">Evento Especial (Llamada al Poder / Tarde de Cata)</option>
+                <option value="special_event">Evento Especial (Llamada al Poder)</option>
               </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
+                ID o Payload del QR
+              </label>
+              <input
+                type="text"
+                placeholder="Ej. 123e4567-e89b-12d3-a456-426614174000..."
+                value={targetUserId}
+                onChange={(e) => setTargetUserId(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl focus:outline-none focus:border-amber-500 text-slate-100 text-xs font-mono transition"
+              />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-3.5 bg-gradient-to-r from-amber-600 to-red-600 hover:from-amber-500 hover:to-red-500 text-white font-bold rounded-xl shadow-lg transition duration-200 disabled:opacity-50 text-sm"
+              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl text-xs transition disabled:opacity-50"
             >
-              {loading ? 'Procesando asistencia...' : 'Confirmar Asistencia (+Puntos)'}
+              {loading ? 'Procesando...' : 'Registrar Manualmente'}
             </button>
           </form>
         </div>
       </div>
+
+      {/* Modal del Escáner de Cámara Trasera */}
+      <QRScannerModal
+        isOpen={isScannerOpen}
+        onClose={() => setIsScannerOpen(false)}
+        onScanSuccess={handleScanSuccess}
+      />
     </div>
   )
 }
