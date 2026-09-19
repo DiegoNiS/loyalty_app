@@ -12,19 +12,64 @@ serve(async (req: Request) => {
       return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 })
     }
 
-    // TODO: Extract JWT from Authorization header and authenticate caller
-    // TODO: Fetch profile info (points, current_streak, invite_code, email_edu_verified)
-    // TODO: Optionally verify points match SUM(delta) from public.points_ledger
-    // TODO: Generate QR payload/data string for client display
+    const authHeader = req.headers.get('Authorization') || ''
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    const supabaseAnonKey = Deno.env.get('SUPABASE_ANON_KEY') || ''
+
+    // 1. Verificar la sesión del usuario mediante el token JWT
+    const supabaseUserClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: { headers: { Authorization: authHeader } },
+    })
+
+    const { data: { user }, error: authError } = await supabaseUserClient.auth.getUser()
+
+    if (authError || !user) {
+      return new Response(JSON.stringify({ error: 'No autorizado' }), { status: 401 })
+    }
+
+    // Cliente con service role para lectura de perfil
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey)
+
+    // 2. Obtener datos del perfil del usuario
+    const { data: profile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, username, role, email_edu_verified, invite_code, points, current_streak, last_attendance_date')
+      .eq('id', user.id)
+      .single()
+
+    if (profileError || !profile) {
+      return new Response(JSON.stringify({ error: 'Perfil no encontrado' }), { status: 404 })
+    }
+
+    // 3. Contar total de asistencias del usuario
+    const { count: totalAttendances } = await supabaseAdmin
+      .from('attendances')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+
+    // 4. Contar total de referidos efectivos
+    const { count: totalReferralsAttended } = await supabaseAdmin
+      .from('referrals')
+      .select('*', { count: 'exact', head: true })
+      .eq('inviter_id', user.id)
+      .eq('status', 'attended')
 
     return new Response(
       JSON.stringify({
-        message: 'Skeleton get-my-stats ready',
+        success: true,
         stats: {
-          points: 0,
-          currentStreak: 0,
-          inviteCode: 'EXAMPLE',
-          qrPayload: 'user-id-or-token',
+          userId: profile.id,
+          username: profile.username,
+          role: profile.role,
+          emailEduVerified: profile.email_edu_verified,
+          points: profile.points,
+          currentStreak: profile.current_streak,
+          lastAttendanceDate: profile.last_attendance_date,
+          inviteCode: profile.invite_code,
+          qrPayload: profile.id, // ID único utilizado para generar el QR en el frontend
+          totalAttendances: totalAttendances || 0,
+          totalReferralsAttended: totalReferralsAttended || 0,
         },
       }),
       { headers: { 'Content-Type': 'application/json' }, status: 200 }

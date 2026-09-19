@@ -12,25 +12,116 @@ interface RegisterRequestBody {
   inviteCode?: string
 }
 
+const POINTS_REFERRAL_SIGNUP = 50
+
 serve(async (req: Request) => {
   try {
-    // 1. Verify HTTP method
     if (req.method !== 'POST') {
       return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 })
     }
 
     const { userId, username, email, inviteCode } = (await req.json()) as RegisterRequestBody
 
-    // TODO: Initialize Supabase client with SERVICE_ROLE_KEY
-    // TODO: Verify if email ends with '.edu.pe' for email_edu_verified flag
-    // TODO: Generate unique invite_code for the new profile
-    // TODO: If inviteCode is provided, resolve inviter_id from profiles table
-    // TODO: Insert profile into public.profiles
-    // TODO: If inviter_id exists, insert into public.referrals (status = 'signed_up')
-    // TODO: Insert initial points entry into public.points_ledger for inviter ('referral_signup')
+    if (!userId || !username || !email) {
+      return new Response(
+        JSON.stringify({ error: 'Campos requeridos faltantes: userId, username, email' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
+    // Inicializar cliente Supabase con SERVICE_ROLE_KEY
+    const supabaseUrl = Deno.env.get('SUPABASE_URL') || ''
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || ''
+    const supabase = createClient(supabaseUrl, supabaseServiceKey)
+
+    // 1. Verificar si el correo pertenece a un dominio .edu.pe
+    const isEduEmail = email.trim().toLowerCase().endsWith('.edu.pe')
+
+    // 2. Generar código de invitación único (ej: VIN-XXXXXX)
+    const generatedInviteCode = 'VIN-' + Math.random().toString(36).substring(2, 8).toUpperCase()
+
+    // 3. Si se envió inviteCode, resolver inviter_id en public.profiles
+    let inviterId: string | null = null
+    if (inviteCode && inviteCode.trim() !== '') {
+      const { data: inviterProfile } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('invite_code', inviteCode.trim().toUpperCase())
+        .single()
+
+      if (inviterProfile) {
+        inviterId = inviterProfile.id
+      }
+    }
+
+    // 4. Insertar nuevo perfil en public.profiles
+    const { error: profileError } = await supabase.from('profiles').insert({
+      id: userId,
+      username: username.trim(),
+      role: 'client',
+      email_edu_verified: isEduEmail,
+      invite_code: generatedInviteCode,
+      referred_by: inviterId,
+      points: 0,
+      current_streak: 0,
+    })
+
+    if (profileError) {
+      throw new Error(`Error creando perfil: ${profileError.message}`)
+    }
+
+    // 5. Si existe inviterId, crear registro en public.referrals y otorgar puntos por signup
+    if (inviterId) {
+      // Registrar la relación de referido
+      const { data: referralData, error: referralError } = await supabase
+        .from('referrals')
+        .insert({
+          inviter_id: inviterId,
+          invited_id: userId,
+          status: 'signed_up',
+        })
+        .select('id')
+        .single()
+
+      if (!referralError && referralData) {
+        // Consultar el reason_id de 'referral_signup'
+        const { data: reasonData } = await supabase
+          .from('point_reasons')
+          .select('id')
+          .eq('code', 'referral_signup')
+          .single()
+
+        if (reasonData) {
+          // Registrar en points_ledger para el invitante
+          await supabase.from('points_ledger').insert({
+            user_id: inviterId,
+            delta: POINTS_REFERRAL_SIGNUP,
+            reason_id: reasonData.id,
+            referral_id: referralData.id,
+          })
+
+          // Actualizar la suma total de puntos del invitante
+          const { data: inviterCurrent } = await supabase
+            .from('profiles')
+            .select('points')
+            .eq('id', inviterId)
+            .single()
+
+          const newPoints = (inviterCurrent?.points || 0) + POINTS_REFERRAL_SIGNUP
+          await supabase
+            .from('profiles')
+            .update({ points: newPoints })
+            .eq('id', inviterId)
+        }
+      }
+    }
 
     return new Response(
-      JSON.stringify({ message: 'Skeleton register-with-invite ready', userId, username }),
+      JSON.stringify({
+        success: true,
+        inviteCode: generatedInviteCode,
+        emailEduVerified: isEduEmail,
+      }),
       { headers: { 'Content-Type': 'application/json' }, status: 200 }
     )
   } catch (error: any) {
