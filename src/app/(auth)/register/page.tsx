@@ -28,10 +28,15 @@ export default function RegisterPage() {
     setLoading(true)
 
     try {
-      // 1. Crear usuario en Supabase Auth
+      // 1. Crear usuario en Supabase Auth pasando username en metadata para el Trigger SQL
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: email.trim(),
         password,
+        options: {
+          data: {
+            username: username.trim(),
+          },
+        },
       })
 
       if (authError || !authData.user) {
