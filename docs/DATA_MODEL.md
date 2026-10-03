@@ -1,134 +1,282 @@
 # Modelo de Datos — Portal de Fidelización Vinos del Corazón
 
-## Diagrama de Entidad-Relación (Mermaid)
+## Diagramas del Esquema de Base de Datos
+
+### Option 1: PlantUML ERD Diagram
+
+```plantuml
+@startuml
+skinparam handwritten false
+skinparam monochrome false
+skinparam packageStyle rect
+
+entity "auth_users" as auth_users {
+  * id : uuid <<PK>>
+  --
+  email : text
+  created_at : timestamptz
+}
+
+entity "profiles" as profiles {
+  * id : uuid <<PK, FK>>
+  --
+  username : text <<UNIQUE>>
+  role : text
+  email_edu_verified : boolean
+  invite_code : text <<UNIQUE>>
+  referred_by : uuid <<FK>>
+  points : integer
+  current_streak : integer
+  last_attendance_date : date
+  created_at : timestamptz
+}
+
+entity "point_rules" as point_rules {
+  * id : uuid <<PK>>
+  --
+  code : text <<UNIQUE>>
+  name : text
+  description : text
+  points_value : integer
+  is_active : boolean
+  effective_from : timestamptz
+  effective_to : timestamptz
+}
+
+entity "point_rule_history" as point_rule_history {
+  * id : uuid <<PK>>
+  --
+  rule_id : uuid <<FK>>
+  old_points_value : integer
+  new_points_value : integer
+  changed_by : uuid <<FK>>
+  reason_description : text
+  effective_from : timestamptz
+  created_at : timestamptz
+}
+
+entity "rewards" as rewards {
+  * id : uuid <<PK>>
+  --
+  name : text
+  description : text
+  points_cost : integer
+  stock : integer
+  is_active : boolean
+}
+
+entity "reward_redemptions" as reward_redemptions {
+  * id : uuid <<PK>>
+  --
+  user_id : uuid <<FK>>
+  reward_id : uuid <<FK>>
+  points_spent : integer
+  status : text
+  redeemed_by : uuid <<FK>>
+  redeemed_at : timestamptz
+  created_at : timestamptz
+}
+
+entity "event_labels" as event_labels {
+  * id : uuid <<PK>>
+  --
+  code : text <<UNIQUE>>
+  name : text
+  description : text
+}
+
+entity "attendances" as attendances {
+  * id : uuid <<PK>>
+  --
+  user_id : uuid <<FK>>
+  marked_by : uuid <<FK>>
+  event_type : text
+  event_label_id : uuid <<FK>>
+  attended_at : timestamptz
+}
+
+entity "point_reasons" as point_reasons {
+  * id : uuid <<PK>>
+  --
+  code : text <<UNIQUE>>
+  name : text
+  description : text
+}
+
+entity "points_ledger" as points_ledger {
+  * id : uuid <<PK>>
+  --
+  user_id : uuid <<FK>>
+  delta : integer
+  reason_id : uuid <<FK>>
+  attendance_id : uuid <<FK>>
+  referral_id : uuid <<FK>>
+  created_at : timestamptz
+}
+
+entity "referrals" as referrals {
+  * id : uuid <<PK>>
+  --
+  inviter_id : uuid <<FK>>
+  invited_id : uuid <<FK, UNIQUE>>
+  status : text
+  created_at : timestamptz
+  attended_at : timestamptz
+}
+
+auth_users ||--|| profiles
+profiles ||--o{ attendances : user
+profiles ||--o{ attendances : marked_by
+event_labels ||--o{ attendances
+profiles ||--o{ points_ledger
+point_reasons ||--o{ points_ledger
+attendances ||--o| points_ledger
+referrals ||--o| points_ledger
+profiles ||--o{ referrals : inviter
+profiles ||--o| referrals : invited
+point_rules ||--o{ point_rule_history
+profiles ||--o{ point_rule_history : changed_by
+profiles ||--o{ reward_redemptions : user
+rewards ||--o{ reward_redemptions
+profiles ||--o{ reward_redemptions : redeemed_by
+@enduml
+```
+
+---
+
+### Option 2: Diagrama de Entidad-Relación (Mermaid Limpio)
 
 ```mermaid
 erDiagram
-    auth_users ||--|| profiles : "1:1 extends"
-    profiles ||--o{ attendances : "has many (as user)"
-    profiles ||--o{ attendances : "marked by (as admin)"
-    event_labels ||--o{ attendances : "categorizes"
-    profiles ||--o{ points_ledger : "has ledger entries"
-    point_reasons ||--o{ points_ledger : "categorizes"
-    attendances ||--o? points_ledger : "generates (attendance_id FK)"
-    referrals ||--o? points_ledger : "generates (referral_id FK)"
-    profiles ||--o{ referrals : "inviter of"
-    profiles ||--o? referrals : "invited as"
-
-    point_rules ||--o{ point_rule_history : "tracks changes (kardex)"
-    profiles ||--o{ point_rule_history : "changed by (admin)"
-    profiles ||--o{ reward_redemptions : "requests redemption"
-    rewards ||--o{ reward_redemptions : "redeemed item"
-    profiles ||--o{ reward_redemptions : "redeemed by (admin)"
+    auth_users ||--|| profiles : extends
+    profiles ||--o{ attendances : has_attendance
+    profiles ||--o{ attendances : marked_by_admin
+    event_labels ||--o{ attendances : label
+    profiles ||--o{ points_ledger : has_ledger
+    point_reasons ||--o{ points_ledger : reason
+    attendances ||--o| points_ledger : attendance_fk
+    referrals ||--o| points_ledger : referral_fk
+    profiles ||--o{ referrals : inviter
+    profiles ||--o| referrals : invited
+    point_rules ||--o{ point_rule_history : history
+    profiles ||--o{ point_rule_history : changed_by
+    profiles ||--o{ reward_redemptions : requested_by
+    rewards ||--o{ reward_redemptions : item
+    profiles ||--o{ reward_redemptions : approved_by
 
     profiles {
-        uuid id PK "auth.users.id"
-        text username UNIQUE
-        text role "client | admin"
+        uuid id PK
+        string username
+        string role
         boolean email_edu_verified
-        text invite_code UNIQUE
-        uuid referred_by FK "profiles.id"
-        integer points "Derived field, source of truth is points_ledger"
-        integer current_streak
+        string invite_code
+        uuid referred_by FK
+        int points
+        int current_streak
         date last_attendance_date
-        timestamptz created_at
+        datetime created_at
     }
 
     point_rules {
         uuid id PK
-        text code UNIQUE "attendance | edu_bonus | referral_signup | referral_attendance | streak_bonus"
-        text name
-        text description
-        integer points_value "Active point value"
+        string code
+        string name
+        string description
+        int points_value
         boolean is_active
-        timestamptz effective_from
-        timestamptz effective_to
+        datetime effective_from
+        datetime effective_to
     }
 
     point_rule_history {
         uuid id PK
-        uuid rule_id FK "point_rules.id"
-        integer old_points_value
-        integer new_points_value
-        uuid changed_by FK "profiles.id"
-        text reason_description
-        timestamptz effective_from
-        timestamptz created_at
+        uuid rule_id FK
+        int old_points_value
+        int new_points_value
+        uuid changed_by FK
+        string reason_description
+        datetime effective_from
+        datetime created_at
     }
 
     rewards {
         uuid id PK
-        text name
-        text description
-        integer points_cost
-        integer stock
+        string name
+        string description
+        int points_cost
+        int stock
         boolean is_active
     }
 
     reward_redemptions {
         uuid id PK
-        uuid user_id FK "profiles.id"
-        uuid reward_id FK "rewards.id"
-        integer points_spent
-        text status "pending | redeemed | cancelled"
-        uuid redeemed_by FK "profiles.id (admin)"
-        timestamptz redeemed_at
-        timestamptz created_at
+        uuid user_id FK
+        uuid reward_id FK
+        int points_spent
+        string status
+        uuid redeemed_by FK
+        datetime redeemed_at
+        datetime created_at
     }
 
     event_labels {
         uuid id PK
-        text code UNIQUE
-        text name
-        text description
+        string code
+        string name
+        string description
     }
 
     attendances {
         uuid id PK
-        uuid user_id FK "profiles.id"
-        uuid marked_by FK "profiles.id (admin)"
-        text event_type
-        uuid event_label_id FK "event_labels.id"
-        timestamptz attended_at
+        uuid user_id FK
+        uuid marked_by FK
+        string event_type
+        uuid event_label_id FK
+        datetime attended_at
     }
 
     point_reasons {
         uuid id PK
-        text code UNIQUE
-        text name
-        text description
+        string code
+        string name
+        string description
     }
 
     points_ledger {
         uuid id PK
-        uuid user_id FK "profiles.id"
-        integer delta
-        uuid reason_id FK "point_reasons.id"
-        uuid attendance_id FK "attendances.id"
-        uuid referral_id FK "referrals.id"
-        timestamptz created_at
+        uuid user_id FK
+        int delta
+        uuid reason_id FK
+        uuid attendance_id FK
+        uuid referral_id FK
+        datetime created_at
     }
 
     referrals {
         uuid id PK
-        uuid inviter_id FK "profiles.id"
-        uuid invited_id FK "profiles.id UNIQUE"
-        text status "signed_up | attended"
-        timestamptz created_at
-        timestamptz attended_at
+        uuid inviter_id FK
+        uuid invited_id FK
+        string status
+        datetime created_at
+        datetime attended_at
     }
 ```
 
-## Descripción de Tablas Adicionales
+---
 
-### 1. `point_rules` (Reglas de Puntos Dinámicas)
-Permite configurar el valor en puntos de cada tipo de acción (`attendance`, `edu_bonus`, `referral_signup`, etc.) de forma dinámica sin hardcodear números en el código. Soporta fechas de vigencia (`effective_from`, `effective_to`).
+## Descripción de Tablas
 
-### 2. `point_rule_history` (Kardex / Historial de Cambios)
-Registro inmutable de auditoría para cada modificación o reprogramación de una regla de puntos. Guarda el valor anterior, el nuevo valor, la descripción del motivo y la identidad del administrador que realizó el cambio (`changed_by`).
+### 1. `profiles`
+Extensión 1:1 de `auth.users`. Guarda metadatos de usuario, rol, código de invitación propio, conteo de racha actual y total acumulado de puntos.
 
-### 3. `rewards` (Catálogo de Premios)
-Catálogo de premios y recompensas disponibles para canje con su costo en puntos (`points_cost`), descripción y control opcional de stock.
+### 2. `point_rules` & `point_rule_history` (Reglas y Kardex)
+Permite configurar el valor en puntos de cada tipo de acción (`attendance`, `edu_bonus`, `referral_signup`, etc.) de forma dinámica con vigencia de fechas y auditoría de modificaciones de administrador.
 
-### 4. `reward_redemptions` (Historial de Canjes)
-Registro de solicitudes y confirmaciones de canjes de premios por parte de los clientes, auditando qué administrador verificó la entrega presencial (`redeemed_by`).
+### 3. `rewards` & `reward_redemptions` (Catálogo y Canjes)
+Catálogo de premios disponibles (`rewards`) e historial de canjes validados por el administrador (`reward_redemptions`).
+
+### 4. `attendances` & `event_labels`
+Registro auditado de asistencias presenciales clasificadas según catálogos de eventos.
+
+### 5. `points_ledger` & `point_reasons`
+Fuente de verdad contable inmutable para todo incremento o descuento de puntos.
