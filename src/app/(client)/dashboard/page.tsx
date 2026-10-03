@@ -17,17 +17,29 @@ interface UserStats {
   qrPayload: string
 }
 
+interface Reward {
+  id: string
+  name: string
+  description: string
+  points_cost: number
+  stock: number | null
+  is_active: boolean
+}
+
 export default function ClientDashboard() {
   const [stats, setStats] = useState<UserStats | null>(null)
+  const [rewards, setRewards] = useState<Reward[]>([])
   const [loading, setLoading] = useState(true)
   const [copied, setCopied] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [redeemStatus, setRedeemStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null)
+  const [redeemingId, setRedeemingId] = useState<string | null>(null)
   const [brightnessMax, setBrightnessMax] = useState(false)
   const router = useRouter()
   const supabase = createClient()
 
   useEffect(() => {
-    async function fetchStats() {
+    async function fetchData() {
       try {
         const { data: { session } } = await supabase.auth.getSession()
 
@@ -36,6 +48,7 @@ export default function ClientDashboard() {
           return
         }
 
+        // 1. Obtener estadísticas del usuario
         const response = await fetch(
           `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-my-stats`,
           {
@@ -47,12 +60,20 @@ export default function ClientDashboard() {
         )
 
         const result = await response.json()
-
-        if (!response.ok || !result.success) {
-          throw new Error(result.error || 'Error al obtener estadísticas')
+        if (response.ok && result.success) {
+          setStats(result.stats)
         }
 
-        setStats(result.stats)
+        // 2. Cargar catálogo de premios desde la tabla rewards
+        const { data: rewardsData } = await supabase
+          .from('rewards')
+          .select('id, name, description, points_cost, stock, is_active')
+          .eq('is_active', true)
+          .order('points_cost', { ascending: true })
+
+        if (rewardsData) {
+          setRewards(rewardsData)
+        }
       } catch (err: any) {
         setErrorMsg(err.message || 'Error al cargar los datos')
       } finally {
@@ -60,8 +81,58 @@ export default function ClientDashboard() {
       }
     }
 
-    fetchStats()
+    fetchData()
   }, [router, supabase])
+
+  async function handleRedeem(reward: Reward) {
+    if (!stats) return
+    setRedeemStatus(null)
+
+    if (stats.points < reward.points_cost) {
+      setRedeemStatus({
+        type: 'error',
+        text: `Necesitas ${reward.points_cost} puntos para este premio (tienes ${stats.points} pts).`,
+      })
+      return
+    }
+
+    setRedeemingId(reward.id)
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/redeem-reward`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ rewardId: reward.id }),
+        }
+      )
+
+      const result = await response.json()
+
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Error al procesar el canje.')
+      }
+
+      setRedeemStatus({
+        type: 'success',
+        text: `🎉 ¡Solicitud creada! Presenta tu pantalla a Zahir para recibir: ${reward.name}`,
+      })
+
+      // Actualizar puntos restantes localmente
+      setStats((prev) => prev ? { ...prev, points: result.remainingPoints } : null)
+    } catch (err: any) {
+      setRedeemStatus({ type: 'error', text: err.message || 'Error al solicitar canje.' })
+    } finally {
+      setRedeemingId(null)
+    }
+  }
 
   async function handleLogout() {
     await supabase.auth.signOut()
@@ -123,7 +194,7 @@ export default function ClientDashboard() {
           </button>
         </div>
 
-        {/* Tarjetas de Puntos y Racha (Optimizado Móvil) */}
+        {/* Tarjetas de Puntos y Racha */}
         <div className="grid grid-cols-2 gap-3">
           {/* Puntos Totales */}
           <div className="bg-gradient-to-br from-slate-900 to-slate-950 border border-red-900/40 p-4 rounded-2xl flex flex-col justify-between relative overflow-hidden shadow-md">
@@ -174,7 +245,6 @@ export default function ClientDashboard() {
             </p>
           </div>
 
-          {/* Contenedor QR blanco para máximo contraste de escaneo en celular */}
           <div className="inline-block p-4 bg-white rounded-2xl shadow-md my-1 border border-slate-200">
             <QRCodeSVG value={stats.qrPayload} size={200} level="H" includeMargin={true} />
           </div>
@@ -191,6 +261,68 @@ export default function ClientDashboard() {
               <span>💡</span>
               <span>{brightnessMax ? 'Modo Normal' : 'Modo Contraste (Para Escanear)'}</span>
             </button>
+          </div>
+        </div>
+
+        {/* SECCIÓN CATÁLOGO DE PREMIOS CANJEABLES */}
+        <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4 shadow-xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-sm font-bold text-slate-100">🎁 Catálogo de Premios</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Canjea tus puntos acumulados en la vinería</p>
+            </div>
+          </div>
+
+          {redeemStatus && (
+            <div
+              className={`p-3 rounded-xl text-xs font-medium text-center ${
+                redeemStatus.type === 'success'
+                  ? 'bg-emerald-950/90 border border-emerald-800 text-emerald-200'
+                  : 'bg-red-950/90 border border-red-800 text-red-200'
+              }`}
+            >
+              {redeemStatus.text}
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {rewards.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-4">Cargando premios disponibles...</p>
+            ) : (
+              rewards.map((reward) => {
+                const canAfford = stats.points >= reward.points_cost
+                const isRedeeming = redeemingId === reward.id
+
+                return (
+                  <div
+                    key={reward.id}
+                    className="bg-slate-950 border border-slate-800 p-4 rounded-xl flex items-center justify-between space-x-3 shadow-inner"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center space-x-2">
+                        <h3 className="text-xs font-bold text-slate-200 truncate">{reward.name}</h3>
+                        <span className="text-[10px] font-extrabold text-amber-400 px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 rounded-full shrink-0">
+                          {reward.points_cost} pts
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1 line-clamp-2">{reward.description}</p>
+                    </div>
+
+                    <button
+                      disabled={!canAfford || isRedeeming}
+                      onClick={() => handleRedeem(reward)}
+                      className={`px-3 py-2 rounded-xl text-xs font-bold transition shrink-0 ${
+                        canAfford
+                          ? 'bg-gradient-to-r from-amber-500 to-red-600 hover:from-amber-400 hover:to-red-500 text-white shadow-md'
+                          : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                      }`}
+                    >
+                      {isRedeeming ? 'Canjeando...' : canAfford ? 'Canjear' : 'Puntos insuficientes'}
+                    </button>
+                  </div>
+                )
+              })
+            )}
           </div>
         </div>
 
