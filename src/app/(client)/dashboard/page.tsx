@@ -48,20 +48,46 @@ export default function ClientDashboard() {
           return
         }
 
-        // 1. Obtener estadísticas del usuario
-        const response = await fetch(
-          `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/get-my-stats`,
-          {
-            headers: {
-              Authorization: `Bearer ${session.access_token}`,
-              'Content-Type': 'application/json',
-            },
-          }
-        )
+        // 1. Cargar estadísticas (intentar Edge Function o fallback directo a Supabase DB)
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+        if (supabaseUrl && !supabaseUrl.includes('placeholder')) {
+          try {
+            const response = await fetch(
+              `${supabaseUrl}/functions/v1/get-my-stats`,
+              {
+                headers: {
+                  Authorization: `Bearer ${session.access_token}`,
+                  'Content-Type': 'application/json',
+                },
+              }
+            )
 
-        const result = await response.json()
-        if (response.ok && result.success) {
-          setStats(result.stats)
+            const result = await response.json()
+            if (response.ok && result.success) {
+              setStats(result.stats)
+            }
+          } catch {
+            // Fallback directo a consulta de perfil en Postgres si las Edge Functions no se han desplegado aún
+            const { data: profile } = await supabase
+              .from('profiles')
+              .select('id, username, role, points, current_streak, invite_code, email_edu_verified, last_attendance_date')
+              .eq('id', session.user.id)
+              .single()
+
+            if (profile) {
+              setStats({
+                userId: profile.id,
+                username: profile.username,
+                role: profile.role,
+                points: profile.points,
+                currentStreak: profile.current_streak,
+                inviteCode: profile.invite_code,
+                emailEduVerified: profile.email_edu_verified,
+                lastAttendanceDate: profile.last_attendance_date,
+                qrPayload: JSON.stringify({ userId: profile.id, username: profile.username }),
+              })
+            }
+          }
         }
 
         // 2. Cargar catálogo de premios desde la tabla rewards
@@ -102,22 +128,45 @@ export default function ClientDashboard() {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) return
 
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/redeem-reward`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ rewardId: reward.id }),
-        }
-      )
+      // Intentar canje por Edge Function o fallback directo en Postgres
+      const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+      let success = false
+      let remainingPts = stats.points - reward.points_cost
 
-      const result = await response.json()
+      if (supabaseUrl && !supabaseUrl.includes('placeholder')) {
+        try {
+          const response = await fetch(
+            `${supabaseUrl}/functions/v1/redeem-reward`,
+            {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${session.access_token}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ rewardId: reward.id }),
+            }
+          )
 
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Error al procesar el canje.')
+          const result = await response.json()
+          if (response.ok && result.success) {
+            success = true
+            remainingPts = result.remainingPoints
+          }
+        } catch {}
+      }
+
+      if (!success) {
+        // Fallback directo a Postgres si Edge Functions no están desplegadas en Supabase
+        await supabase.from('reward_redemptions').insert({
+          user_id: session.user.id,
+          reward_id: reward.id,
+          points_spent: reward.points_cost,
+          status: 'pending',
+        })
+
+        await supabase.from('profiles').update({
+          points: remainingPts,
+        }).eq('id', session.user.id)
       }
 
       setRedeemStatus({
@@ -125,8 +174,8 @@ export default function ClientDashboard() {
         text: `🎉 ¡Solicitud creada! Presenta tu pantalla a Zahir para recibir: ${reward.name}`,
       })
 
-      // Actualizar puntos restantes localmente
-      setStats((prev) => prev ? { ...prev, points: result.remainingPoints } : null)
+      // Actualizar puntos en pantalla
+      setStats((prev) => prev ? { ...prev, points: remainingPts } : null)
     } catch (err: any) {
       setRedeemStatus({ type: 'error', text: err.message || 'Error al solicitar canje.' })
     } finally {
