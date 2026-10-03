@@ -1,8 +1,5 @@
 // Edge Function: mark-attendance
-// Scope: Invocable ONLY by admin (Zahir). Receives client QR/ID, records attendance,
-// calculates weekly streak (increments if within 7 days, else resets to 1),
-// awards attendance points + streak bonus if applicable, and updates referral status to 'attended'
-// with bonus points to inviter if this is the invited user's first attendance.
+// Updated: Fetches dynamic point values from public.point_rules table instead of hardcoded constants.
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -11,10 +8,6 @@ interface MarkAttendanceRequestBody {
   targetUserId: string
   eventTypeCode?: 'regular_tasting' | 'special_event'
 }
-
-const POINTS_ATTENDANCE = 10
-const POINTS_STREAK_BONUS = 5
-const POINTS_REFERRAL_ATTENDANCE = 30
 
 serve(async (req: Request) => {
   const corsHeaders = {
@@ -35,7 +28,6 @@ serve(async (req: Request) => {
       })
     }
 
-    // 1. Validar autenticación del llamante (JWT del Admin)
     const authHeader = req.headers.get('Authorization')
     if (!authHeader) {
       return new Response(JSON.stringify({ error: 'No autorizado: Falta cabecera Authorization' }), {
@@ -48,7 +40,6 @@ serve(async (req: Request) => {
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     const supabase = createClient(supabaseUrl, supabaseServiceKey)
 
-    // Extraer token y verificar usuario llamante
     const token = authHeader.replace('Bearer ', '')
     const { data: { user: callerUser }, error: authError } = await supabase.auth.getUser(token)
 
@@ -59,7 +50,6 @@ serve(async (req: Request) => {
       })
     }
 
-    // Verificar que el llamante tenga rol admin en public.profiles
     const { data: callerProfile } = await supabase
       .from('profiles')
       .select('role')
@@ -82,7 +72,22 @@ serve(async (req: Request) => {
       })
     }
 
-    // 2. Obtener el perfil del usuario cliente a marcar asistencia
+    // 1. Obtener REGLAS DINÁMICAS DE PUNTOS desde la tabla public.point_rules
+    const { data: rulesData } = await supabase
+      .from('point_rules')
+      .select('code, points_default')
+      .eq('is_active', true)
+
+    const ruleMap = new Map((rulesData || []).map((r: { code: string; points_default: number }) => [r.code, r.points_default]))
+
+    const ptsAttendance = eventTypeCode === 'special_event'
+      ? (ruleMap.get('attendance_special') ?? 15)
+      : (ruleMap.get('attendance_regular') ?? 10)
+
+    const ptsStreakBonus = ruleMap.get('streak_bonus') ?? 5
+    const ptsReferralAttendance = ruleMap.get('referral_attendance') ?? 30
+
+    // 2. Obtener perfil objetivo
     const { data: targetProfile, error: targetError } = await supabase
       .from('profiles')
       .select('id, points, current_streak, last_attendance_date')
@@ -121,19 +126,16 @@ serve(async (req: Request) => {
       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
 
       if (diffDays <= 0) {
-        // Mismo día
         newStreak = targetProfile.current_streak
       } else if (diffDays <= 7) {
-        // Dentro de la semana
         newStreak = targetProfile.current_streak + 1
         isStreakBonus = newStreak > 1
       } else {
-        // Más de 7 días: reiniciar racha
         newStreak = 1
       }
     }
 
-    // 5. Insertar registro en public.attendances
+    // 5. Insertar asistencia
     const { data: attendanceData, error: attendanceError } = await supabase
       .from('attendances')
       .insert({
@@ -150,29 +152,26 @@ serve(async (req: Request) => {
       throw new Error(`Error al registrar asistencia: ${attendanceError?.message}`)
     }
 
-    // 6. Registrar entradas en points_ledger para el cliente
-    let totalPointsAwarded = POINTS_ATTENDANCE
+    // 6. Registrar entradas en points_ledger con valores DINÁMICOS
+    let totalPointsAwarded = ptsAttendance
 
-    // Entrada 1: Puntos por asistencia
     await supabase.from('points_ledger').insert({
       user_id: targetUserId,
-      delta: POINTS_ATTENDANCE,
+      delta: ptsAttendance,
       reason_id: reasonMap.get('attendance'),
       attendance_id: attendanceData.id,
     })
 
-    // Entrada 2: Bono de racha si aplica
     if (isStreakBonus && reasonMap.get('streak_bonus')) {
-      totalPointsAwarded += POINTS_STREAK_BONUS
+      totalPointsAwarded += ptsStreakBonus
       await supabase.from('points_ledger').insert({
         user_id: targetUserId,
-        delta: POINTS_STREAK_BONUS,
+        delta: ptsStreakBonus,
         reason_id: reasonMap.get('streak_bonus'),
         attendance_id: attendanceData.id,
       })
     }
 
-    // Actualizar perfil del cliente
     await supabase
       .from('profiles')
       .update({
@@ -182,7 +181,7 @@ serve(async (req: Request) => {
       })
       .eq('id', targetUserId)
 
-    // 7. Verificar si el usuario tenía una invitación pendiente ('signed_up')
+    // 7. Verificar referido pendiente
     const { data: pendingReferral } = await supabase
       .from('referrals')
       .select('id, inviter_id')
@@ -191,7 +190,6 @@ serve(async (req: Request) => {
       .single()
 
     if (pendingReferral && reasonMap.get('referral_attendance')) {
-      // Marcar referido como 'attended'
       await supabase
         .from('referrals')
         .update({
@@ -200,15 +198,13 @@ serve(async (req: Request) => {
         })
         .eq('id', pendingReferral.id)
 
-      // Acreditar puntos de 'referral_attendance' al invitante
       await supabase.from('points_ledger').insert({
         user_id: pendingReferral.inviter_id,
-        delta: POINTS_REFERRAL_ATTENDANCE,
+        delta: ptsReferralAttendance,
         reason_id: reasonMap.get('referral_attendance'),
         referral_id: pendingReferral.id,
       })
 
-      // Actualizar total derivado de puntos del invitante
       const { data: inviterProf } = await supabase
         .from('profiles')
         .select('points')
@@ -218,7 +214,7 @@ serve(async (req: Request) => {
       if (inviterProf) {
         await supabase
           .from('profiles')
-          .update({ points: inviterProf.points + POINTS_REFERRAL_ATTENDANCE })
+          .update({ points: inviterProf.points + ptsReferralAttendance })
           .eq('id', pendingReferral.inviter_id)
       }
     }

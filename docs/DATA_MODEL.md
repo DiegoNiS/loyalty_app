@@ -14,6 +14,7 @@ erDiagram
     referrals ||--o? points_ledger : "generates (referral_id FK)"
     profiles ||--o{ referrals : "inviter of"
     profiles ||--o? referrals : "invited as"
+    point_rules ||..o{ points_ledger : "configures points value"
 
     profiles {
         uuid id PK "auth.users.id"
@@ -26,6 +27,16 @@ erDiagram
         integer current_streak "Weekly streak count"
         date last_attendance_date
         timestamptz created_at
+    }
+
+    point_rules {
+        uuid id PK
+        text code UNIQUE "attendance_regular | attendance_special | edu_bonus | referral_signup | referral_attendance | streak_bonus"
+        text name
+        integer points_default "Puntaje configurable dinámicamente"
+        boolean is_active
+        text description
+        timestamptz updated_at
     }
 
     event_labels {
@@ -77,19 +88,21 @@ erDiagram
 
 ### 1. `profiles`
 Extensión 1:1 de `auth.users`. Guarda metadatos de usuario, rol, código de invitación propio, conteo de racha actual y total acumulado de puntos.
-*Nota: `email_edu_verified` es un flag booleano (para otorgar bono por correos universitarios `.edu.pe`). Cualquier tipo de correo electrónico puede registrarse.*
 
-### 2. `event_labels` (Catálogo)
-Tabla de catálogo para etiquetas textuales de eventos (ej: "Cata Regular", "Llamada al Poder"). Evita la redundancia de cadenas de texto y optimiza el almacenamiento.
+### 2. `point_rules` (Catálogo Dinámico de Puntajes)
+Tabla donde se define el puntaje asignado a cada evento o acción (`attendance_regular`, `attendance_special`, `edu_bonus`, `streak_bonus`, `referral_signup`, `referral_attendance`). **Permite cambiar el valor numérico de cualquier punto en tiempo real desde la base de datos sin alterar el código.**
 
-### 3. `attendances`
-Registro auditado de asistencias presenciales escaneadas por el administrador (Zahir), vinculado opcionalmente a un evento de `event_labels`.
+### 3. `event_labels` (Catálogo)
+Tabla de catálogo para etiquetas textuales de eventos (ej: "Cata Regular", "Llamada al Poder").
 
-### 4. `point_reasons` (Catálogo)
-Tabla de catálogo para los motivos de acreditación/débito de puntos (ej: `attendance`, `referral_signup`, `referral_attendance`, `streak_bonus`, `manual_adjustment`).
+### 4. `attendances`
+Registro auditado de asistencias presenciales escaneadas por el administrador (Zahir), vinculado a un evento de `event_labels`.
 
-### 5. `points_ledger`
-Fuente de verdad inmutable de puntos. En lugar de un campo de referencia genérico polimórfico, utiliza **FKs explícitas** (`attendance_id`, `referral_id`) y una relación con `point_reasons`, garantizando integridad referencial estricta.
+### 5. `point_reasons` (Catálogo)
+Tabla de catálogo para los motivos de acreditación/débito de puntos.
 
-### 6. `referrals`
-Seguimiento del ciclo de vida de los referidos desde su registro (`signed_up`) hasta su primera asistencia confirmada (`attended`).
+### 6. `points_ledger`
+Fuente de verdad inmutable de puntos con FKs explícitas.
+
+### 7. `referrals`
+Seguimiento del ciclo de vida de los referidos desde su registro hasta su primera asistencia confirmada.
